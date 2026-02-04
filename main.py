@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """
-Flask Backend for TrainingPeaks File Processor
-Integrates with existing FIT parsing code to handle file uploads from React app
+Flask Backend for TrainingPeaks File Processor - UPDATED WITH PACE SUPPORT
+
+NEW FEATURES:
+- Extracts pace targets from TrainingPeaks workout structure files
+- Converts speed (m/s) to pace (min/km) format
+- Outputs target_pace_low and target_pace_high in CSV
 
 Requirements:
     pip install flask flask-cors fitparse --break-system-packages
 """
 
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
 import io
@@ -17,13 +21,12 @@ import zipfile
 from datetime import datetime, timedelta
 from fitparse import FitFile
 import statistics
-import tempfile
 
 app = Flask(__name__)
 CORS(app)
 
 # ============================================================================
-# FIT PARSING FUNCTIONS (from your existing batch_parse_fit.py)
+# FIT PARSING FUNCTIONS
 # ============================================================================
 
 def calculate_hr_drift(records, start_time, duration_seconds):
@@ -154,7 +157,7 @@ def create_lap_data_csv_content(lap_data, record_data):
     return output.getvalue()
 
 # ============================================================================
-# STRUCTURE PARSING (from your trainingpeaks_fit_parser.py)
+# STRUCTURE PARSING WITH PACE SUPPORT (UPDATED)
 # ============================================================================
 
 def convert_hr(encoded_value):
@@ -162,6 +165,21 @@ def convert_hr(encoded_value):
     if encoded_value is None:
         return None
     return encoded_value - 100
+
+def speed_to_pace_seconds(speed_ms):
+    """Convert speed (m/s) to pace (seconds per km)"""
+    if speed_ms is None or speed_ms == 0:
+        return None
+    seconds_per_km = 1000 / speed_ms
+    return round(seconds_per_km)
+
+def pace_seconds_to_string(seconds_per_km):
+    """Convert pace in seconds per km to M:SS format"""
+    if seconds_per_km is None:
+        return None
+    minutes = int(seconds_per_km // 60)
+    seconds = int(seconds_per_km % 60)
+    return f"{minutes}:{seconds:02d}"
 
 def get_zone_name(hr_low, hr_high):
     """Determine zone name based on HR ranges"""
@@ -203,11 +221,14 @@ def parse_workout_structure(fit_data):
     return workout_info, workout_steps
 
 def create_structure_csv_content(workout_steps):
-    """Create structure CSV content as string"""
+    """Create structure CSV content with HR zones AND pace targets"""
     output = io.StringIO()
-    fieldnames = ['step_number', 'step_name', 'duration_seconds', 
-                  'target_zone_low', 'target_zone_high', 'target_zone_name',
-                  'step_type', 'notes']
+    fieldnames = [
+        'step_number', 'step_name', 'duration_seconds', 
+        'target_zone_low', 'target_zone_high', 'target_zone_name',
+        'target_pace_low', 'target_pace_high',
+        'step_type', 'notes'
+    ]
     writer = csv.DictWriter(output, fieldnames=fieldnames)
     writer.writeheader()
     
@@ -217,6 +238,7 @@ def create_structure_csv_content(workout_steps):
         duration_time = step.get('duration_time')
         intensity = step.get('intensity', '')
         
+        # Extract HR zones
         hr_low_encoded = step.get('custom_target_heart_rate_low')
         hr_high_encoded = step.get('custom_target_heart_rate_high')
         hr_low = convert_hr(hr_low_encoded)
@@ -224,6 +246,18 @@ def create_structure_csv_content(workout_steps):
         
         zone_name = get_zone_name(hr_low, hr_high)
         
+        # Extract pace targets (NEW)
+        speed_low_ms = step.get('custom_target_speed_low')
+        speed_high_ms = step.get('custom_target_speed_high')
+        
+        # Convert speed to pace (inverted)
+        pace_low_sec = speed_to_pace_seconds(speed_high_ms)
+        pace_high_sec = speed_to_pace_seconds(speed_low_ms)
+        
+        pace_low = pace_seconds_to_string(pace_low_sec) if pace_low_sec else ''
+        pace_high = pace_seconds_to_string(pace_high_sec) if pace_high_sec else ''
+        
+        # Determine step type
         if duration_type == 'repeat_until_steps_cmplt':
             step_type = 'repeat'
         elif intensity == 'warmup':
@@ -239,6 +273,7 @@ def create_structure_csv_content(workout_steps):
         else:
             step_type = intensity or ''
         
+        # Parse duration and notes
         duration_seconds = None
         notes = ''
         
@@ -258,6 +293,8 @@ def create_structure_csv_content(workout_steps):
             'target_zone_low': hr_low if hr_low is not None else '',
             'target_zone_high': hr_high if hr_high is not None else '',
             'target_zone_name': zone_name,
+            'target_pace_low': pace_low,
+            'target_pace_high': pace_high,
             'step_type': step_type,
             'notes': notes
         })
@@ -275,14 +312,10 @@ def parse_lap_data():
         file = request.files['file']
         file_data = file.read()
         
-        # Decompress if .gz
         if file.filename.endswith('.gz'):
             file_data = gzip.decompress(file_data)
         
-        # Parse FIT file
         session_data, lap_data, record_data = parse_fit_file(file_data)
-        
-        # Create CSV content
         csv_content = create_lap_data_csv_content(lap_data, record_data)
         
         return jsonify({
@@ -299,15 +332,12 @@ def parse_lap_data():
 
 @app.route('/parse-structure', methods=['POST'])
 def parse_structure():
-    """Parse workout structure FIT file"""
+    """Parse workout structure FIT file - NOW INCLUDES PACE TARGETS"""
     try:
         file = request.files['file']
         file_data = file.read()
         
-        # Parse FIT file
         workout_info, workout_steps = parse_workout_structure(file_data)
-        
-        # Create CSV content
         csv_content = create_structure_csv_content(workout_steps)
         
         return jsonify({
@@ -329,7 +359,6 @@ def unzip_file():
         file = request.files['file']
         
         with zipfile.ZipFile(io.BytesIO(file.read())) as zip_ref:
-            # Find the first CSV file
             csv_files = [name for name in zip_ref.namelist() if name.endswith('.csv')]
             
             if not csv_files:
@@ -338,7 +367,6 @@ def unzip_file():
                     'error': 'No CSV file found in zip'
                 }), 400
             
-            # Read the CSV content
             csv_content = zip_ref.read(csv_files[0]).decode('utf-8')
             
             return jsonify({
@@ -356,22 +384,21 @@ def unzip_file():
 @app.route('/health', methods=['GET'])
 def health():
     """Health check endpoint"""
-    return jsonify({'status': 'ok', 'message': 'TrainingPeaks FIT Parser API is running'})
+    return jsonify({'status': 'ok', 'message': 'TrainingPeaks FIT Parser API v2.0 (with PACE support)'})
 
 if __name__ == '__main__':
-    # Get port from environment variable (Zeabur/cloud platforms set this)
     port = int(os.environ.get('PORT', 5000))
     
     print("=" * 70)
-    print("TrainingPeaks File Processor Backend")
+    print("TrainingPeaks File Processor Backend v2.0 - WITH PACE SUPPORT")
     print("=" * 70)
     print(f"\nStarting Flask server on 0.0.0.0:{port}")
     print("\nEndpoints:")
-    print("  POST /parse-lap-data    - Parse lap data FIT files (.fit.gz)")
-    print("  POST /parse-structure   - Parse workout structure FIT files (.fit)")
-    print("  POST /unzip             - Unzip .zip files and extract CSV")
+    print("  POST /parse-lap-data    - Parse lap data FIT files")
+    print("  POST /parse-structure   - Parse workout structure (HR + PACE)")
+    print("  POST /unzip             - Unzip and extract CSV")
     print("  GET  /health            - Health check")
-    print("\n" + "=" * 70)
+    print("\nNEW: Extracts pace targets from TrainingPeaks workouts")
+    print("=" * 70)
     
-    # Bind to 0.0.0.0 so it's accessible externally, disable debug in production
     app.run(host='0.0.0.0', port=port, debug=False)
