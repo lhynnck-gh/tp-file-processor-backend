@@ -29,6 +29,17 @@ CORS(app)
 # FIT PARSING FUNCTIONS
 # ============================================================================
 
+def calculate_min_hr(records, start_time, duration_seconds):
+    """Calculate min heart rate from raw records within a lap window"""
+    end_time = start_time + timedelta(seconds=duration_seconds)
+    hr_values = [
+        r['heart_rate'] for r in records
+        if 'timestamp' in r and 'heart_rate' in r
+        and r['heart_rate'] is not None
+        and start_time <= r['timestamp'] < end_time
+    ]
+    return min(hr_values) if hr_values else None
+
 def calculate_hr_drift(records, start_time, duration_seconds):
     """Calculate HR drift for laps > 5 minutes"""
     if duration_seconds < 300:
@@ -116,6 +127,8 @@ def create_lap_data_csv_content(lap_data, record_data):
         distance = lap.get('total_distance')
         avg_hr = lap.get('avg_heart_rate')
         min_hr = lap.get('min_heart_rate')
+        if min_hr is None and start_time and duration:
+            min_hr = calculate_min_hr(record_data, start_time, duration)
         max_hr = lap.get('max_heart_rate')
         
         # Use enhanced_avg_speed for pace
