@@ -102,7 +102,7 @@ def create_lap_data_csv_content(lap_data, record_data):
     output = io.StringIO()
     fieldnames = [
         'lap_number', 'lap_name', 'start_time', 'duration_seconds',
-        'distance_meters', 'avg_heart_rate', 'max_heart_rate',
+        'distance_meters', 'avg_heart_rate', 'min_heart_rate', 'max_heart_rate',
         'avg_pace', 'avg_cadence', 'avg_power', 'hr_drift'
     ]
     writer = csv.DictWriter(output, fieldnames=fieldnames)
@@ -115,6 +115,7 @@ def create_lap_data_csv_content(lap_data, record_data):
         duration = lap.get('total_elapsed_time')
         distance = lap.get('total_distance')
         avg_hr = lap.get('avg_heart_rate')
+        min_hr = lap.get('min_heart_rate')
         max_hr = lap.get('max_heart_rate')
         
         # Use enhanced_avg_speed for pace
@@ -146,6 +147,7 @@ def create_lap_data_csv_content(lap_data, record_data):
             'start_time': start_time_str,
             'duration_seconds': duration or '',
             'distance_meters': distance or '',
+            'min_heart_rate': min_hr or '',
             'avg_heart_rate': avg_hr or '',
             'max_heart_rate': max_hr or '',
             'avg_pace': avg_pace or '',
